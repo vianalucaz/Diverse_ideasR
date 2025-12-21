@@ -52,7 +52,7 @@ ggplot(op, aes(x = reorder(ds_grau_escolaridade, -percent), y = percent)) +
   geom_col(fill = "steelblue") +
   geom_text(aes(label = paste0(percent, "%")), hjust = -0.1, size = 3.5) +
   labs(
-    title = "Distribuição dos Eleitores por Grau de Escolaridade - São Pedro da Aldeia (2022)",
+    title = "Distribuição dos Eleitores por Grau de Escolaridade - São Pedro da Aldeia (2024)",
     x = "Grau de Escolaridade",
     y = "Percentual de Eleitores"
   ) +
