@@ -1,0 +1,232 @@
+---
+title: "Eleitorado e Padrões de Votação em São Pedro da Aldeia (RJ)"
+subtitle: "Análise Descritiva, Visualização Espacial de Locais de Votação"
+author: "Lucas Viana da Silva"
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    df-print: paged
+lang: pt-BR
+execute:
+  warning: false
+  message: false
+---
+
+## Introdução
+
+Este projeto realiza uma análise dos dados das Eleições Municipais de 2024 em São Pedro da Aldeia. O foco é o perfil educacional do eleitorado, gênero e a distribuição espacial dos votos por zonas eleitorais, utilizando técnicas de Big Data para o processamento de grandes volumes de dados do TSE.
+
+### Carregando pacotes
+
+```{r, warning=FALSE, message=FALSE}
+if(!require("pacman")) install.packages("pacman")
+pacman::p_load("dplyr", "ggplot2", "janitor", "electionsBR", "gt", "tidygeocoder", "leaflet", "janitor", "scales", "arrow", "vroom" )
+```
+
+### Carregando dados - perfil dos eleitores
+
+```{r, warning=FALSE, message=FALSE}
+# os dados do arquivo "tse.csv" podem sem obtidos através pacote "electionsBR" utilizando o argumento type = voter_profile
+
+df_bruto <- vroom::vroom(
+  file = "tse.csv",
+  delim = ";",
+  locale = locale(encoding = "ISO-8859-1"),
+  show_col_types = FALSE
+) |>
+  dplyr::filter(
+    ANO_ELEICAO == 2024,
+    NM_MUNICIPIO == "SÃO PEDRO DA ALDEIA"
+  )
+
+arrow::write_parquet(df_bruto, "tse.parquet") # arquivo mais leve
+
+rm(df_bruto) # limpar a memória
+
+df_final <- arrow::read_parquet("tse.parquet") |>
+  janitor::clean_names()
+
+```
+
+### Agrupamento para as tabelas
+
+```{r, warning=FALSE, message=FALSE}
+
+op <- df_final |>
+  dplyr::group_by(ds_grau_escolaridade) |>
+  dplyr::summarise(total = sum(qt_eleitores_perfil, na.rm = TRUE)) |>
+  dplyr::mutate(percent = round((total/sum(total))*100,2))
+
+op1 <- df_final |>
+  dplyr::group_by(ds_genero) |>
+  dplyr::summarise(total = sum(qt_eleitores_perfil, na.rm = TRUE)) |>
+  dplyr::mutate(percent = round((total/sum(total))*100,2))
+
+```
+
+### Tabelas
+
+```{r, warning=FALSE, message=FALSE}
+# Tabela 1 - escolaridade
+op |>
+  dplyr::arrange(desc(total)) |> 
+  gt::gt() |>
+  gt::tab_header(  title = "Eleitorado em São Pedro da Aldeia",
+               subtitle = "Escolaridade"
+  ) |>
+  cols_label(ds_grau_escolaridade = "Grau de escolaridade",
+             total = "Eleitorado",
+             percent = "(%)") |>
+  tab_source_note(source_note = "Fonte: TSE (Via ElectionsBR) | Elaborado por: Lucas Viana")
+
+# Tabela 2 - gênero
+op1 |>
+  dplyr::arrange(desc(total)) |> 
+  gt::gt() |>
+  gt::tab_header(title = "Eleitorado em São Pedro da Aldeia",
+                 subtitle = "Gênero") |>
+  cols_label(ds_genero = "Gênero",
+             total = "Eleitorado",
+             percent = "(%)") |>
+  tab_source_note(source_note = "Fonte: TSE (Via ElectionsBR) | Elaborado por: Lucas Viana")
+
+
+```
+
+### Carregando os dados - seções eleitorais
+
+```{r, warning=FALSE, message=FALSE}
+
+dados <- electionsBR::elections_tse(year = 2024,
+                       type = "vote_section",
+                       uf = "RJ",
+                       br_archive = TRUE) |>
+        janitor::clean_names()
+
+df_p <- dados |>
+  dplyr::select(cd_municipio, nm_municipio, ds_cargo, nm_votavel, qt_votos,
+         nm_local_votacao, ds_local_votacao_endereco) |>
+  dplyr::filter(nm_municipio == "SÃO PEDRO DA ALDEIA",
+         ds_cargo == "Prefeito")
+```
+
+### Visualização da Distribuição percentual de votos por local de votação
+
+```{r, warning=FALSE, message=FALSE}
+
+ggplot2::ggplot(df_p, aes(x  = nm_local_votacao, y = qt_votos, fill = nm_votavel))+
+  geom_bar(stat = "identity", position = "fill")+ #usa fill para normalizar
+  theme_bw()+
+  geom_hline(yintercept = .5, linetype = 2, size = 1)+
+  coord_flip()+
+  scale_y_continuous(labels = scales::percent_format()) + # mostra o eixo em %
+  labs(
+    title = "Distribuição percentual de votos por local de votação - São Pedro da Aldeia (2024)",
+    subtitle = "Proporção de votos para cada candidato a Prefeito",
+    x = "Local de votação",
+    y = "Proporção dos votos (%)",
+    fill = "Candidato"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.y = element_text(size = 9),
+    axis.text.x = element_text(size = 9),
+    legend.position = "bottom",  # 🔹 move a legenda para baixo
+    legend.title = element_text(face = "bold"),
+    panel.grid.major.y = element_blank(), # remove grade lateral
+    panel.grid.minor = element_blank()
+  )
+
+
+
+
+```
+
+### Processamento de Dados Espaciais e Ranking
+
+```{r, warning=FALSE, message=FALSE}
+
+# Criando base de endereços únicos para geocodificação, o objetivo é economizar tempo/API
+
+# Criando base de endereços únicos para geocodificação (economiza tempo/API)
+locais_geo <- df_p |>
+  dplyr::distinct(nm_local_votacao, ds_local_votacao_endereco) |>
+  dplyr::mutate(endereco_mapa = paste0(ds_local_votacao_endereco, ", São Pedro da Aldeia, RJ, Brasil")) |>
+  tidygeocoder::geocode(address = endereco_mapa, method = 'osm', lat = latitude, long = longitude)
+
+# Processando a votação: Ranking de 1º e 2º lugares por local
+df_mapa_final <- df_p |>
+  dplyr::group_by(nm_local_votacao, nm_votavel) |>
+  dplyr::summarise(votos = sum(qt_votos), .groups = "drop") |>
+  dplyr::group_by(nm_local_votacao) |>
+  # Calcula ranking e estatísticas de dominância
+  dplyr::mutate(
+    posicao = rank(desc(votos), ties.method = "first"),
+    total_local = sum(votos),
+    pct = votos / total_local
+  ) |>
+  dplyr::filter(posicao <= 2) |>
+  # Pivota para ter 1º e 2º colocados na mesma linha
+  tidyr::pivot_wider(
+    id_cols = c(nm_local_votacao, total_local),
+    names_from = posicao,
+    values_from = c(nm_votavel, votos, pct)
+  ) |>
+  # Une com as coordenadas geográficas
+  dplyr::left_join(locais_geo, by = "nm_local_votacao") |>
+  dplyr::mutate(margem_vitoria = votos_1 - votos_2) |>
+  tidyr::drop_na(latitude, longitude)
+
+
+```
+
+### Visualização Interativa
+
+O mapa interativo permite identificar:
+
+-   **Raio do Círculo** é proporcional ao tamanho da seção eleitoral (votos totais).
+
+-   **Cor** Identificando o candidato vencedor no local.
+
+-   **Popup** é onde aparece a nuvem interativa e detalha o 1º vs 2º lugar e a porcentagem de votos.
+
+```{r, warning=FALSE, message=FALSE}
+pal <- colorFactor(palette = "Set1", domain = df_mapa_final$nm_votavel_1)
+
+leaflet::leaflet(df_mapa_final) |>
+  leaflet::addProviderTiles(providers$OpenStreetMap.Mapnik) |>
+  leaflet::addCircleMarkers(
+    ~longitude, ~latitude,
+    radius = ~sqrt(total_local) * 0.5, # Escala visual do círculo
+    color = ~pal(nm_votavel_1),
+    fillOpacity = 0.7,
+    weight = 2,
+    popup = ~paste0(
+      "<div style='font-family: sans-serif;'>",
+      "<b>Local:</b> ", nm_local_votacao, "<br>",
+      "<b>Endereço:</b> ", ds_local_votacao_endereco, "<hr>",
+      "<span style='color:green;'><b>1º:</b> ", nm_votavel_1, "</span> - ", votos_1, " votos (", percent(pct_1, 0.1), ")<br>",
+      "<span style='color:orange;'><b>2º:</b> ", nm_votavel_2, "</span> - ", votos_2, " votos (", percent(pct_2, 0.1), ")<br>",
+      "<b>Diferença:</b> ", margem_vitoria, " votos",
+      "</div>"
+    )
+  ) |>
+  leaflet::addLegend(
+    pal = pal,
+    values = ~nm_votavel_1,
+    title = "Vencedor no Local",
+    position = "bottomright"
+  )
+
+
+```
+
+### Resultado
+
+O Resultado do mapa interativo foi publicado no RPubs e pode ser visualizado em \[Mapa das eleições 2024 em SPA\](<https://rpubs.com/Vianalucaz/eleicaospa2024>)
